@@ -32,6 +32,20 @@ abstract class DoctrineMessageRepositoryTestCase extends MessageRepositoryTestCa
         $this->truncateTable();
     }
 
+    protected function tearDown(): void
+    {
+        parent::tearDown();
+
+        $warning = $this->connection->executeQuery('SHOW WARNINGS')->fetchNumeric();
+        if ($warning !== false && count($warning) > 0) {
+            self::fail(sprintf(
+                'Warnings issued durings tests, these can potentially result in data loss: [%d] %s',
+                $warning[1],
+                $warning[2],
+            ));
+        }
+    }
+
     protected function formatDsn(): string
     {
         $host = getenv('EVENTSAUCE_TESTING_MYSQL_HOST') ?: '127.0.0.1';

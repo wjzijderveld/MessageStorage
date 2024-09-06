@@ -30,6 +30,21 @@ abstract class DoctrineMessageRepositoryTestCase extends MessageRepositoryTestCa
         $this->connection->executeQuery('TRUNCATE TABLE ' . $this->tableName);
     }
 
+    protected function tearDown(): void
+    {
+        parent::tearDown();
+
+        $warning = $this->connection->executeQuery('SHOW WARNINGS')->fetchNumeric();
+        if (count($warning) > 0) {
+            var_dump($warning);
+            self::fail(sprintf(
+                'Warnings issued durings tests, these can potentially result in data loss: [%d] %s',
+                $warning[1],
+                $warning[2],
+            ));
+        }
+    }
+
     protected function aggregateRootId(): AggregateRootId
     {
         return DummyAggregateRootId::generate();

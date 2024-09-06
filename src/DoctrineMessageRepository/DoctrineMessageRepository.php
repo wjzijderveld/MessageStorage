@@ -3,6 +3,7 @@
 namespace EventSauce\MessageRepository\DoctrineMessageRepository;
 
 use Doctrine\DBAL\Connection;
+use Doctrine\DBAL\ParameterType;
 use Doctrine\DBAL\Query\QueryBuilder;
 use EventSauce\IdEncoding\BinaryUuidIdEncoder;
 use EventSauce\IdEncoding\IdEncoder;
@@ -70,6 +71,7 @@ class DoctrineMessageRepository implements MessageRepository
         $insertParameters = [];
 
         foreach ($messages as $index => $message) {
+            $insertValuePrefixes = [];
             $payload = $this->serializer->serializeMessage($message);
             $payload['headers'][Header::EVENT_ID] ??= Uuid::uuid4()->toString();
 
@@ -80,12 +82,19 @@ class DoctrineMessageRepository implements MessageRepository
                 $this->indexParameter('payload', $index) => json_encode($payload, $this->jsonEncodeOptions),
             ];
 
+            if ($this->eventIdEncoder instanceof BinaryUuidIdEncoder) {
+                $insertValuePrefixes[$this->indexParameter('event_id', $index)] = '_binary ';
+            }
+            if ($this->aggregateRootIdEncoder instanceof BinaryUuidIdEncoder) {
+                $insertValuePrefixes[$this->indexParameter('aggregate_root_id', $index)] = '_binary ';
+            }
+
             foreach ($additionalColumns as $column => $header) {
                 $messageParameters[$this->indexParameter($column, $index)] = $payload['headers'][$header];
             }
 
             // Creates a values line like: (:event_id_1, :aggregate_root_id_1, ...)
-            $insertValues[] = implode(', ', $this->formatNamedParameters(array_keys($messageParameters)));
+            $insertValues[] = implode(', ', $this->formatNamedParameters(array_keys($messageParameters), $insertValuePrefixes));
 
             // Flatten the message parameters into the query parameters
             $insertParameters = array_merge($insertParameters, $messageParameters);
@@ -110,19 +119,25 @@ class DoctrineMessageRepository implements MessageRepository
         return $name . '_' . $index;
     }
 
-    private function formatNamedParameters(array $parameters): array
+    private function formatNamedParameters(array $parameters, array $prefixes): array
     {
-        return array_map(static fn(string $name) => ':' . $name, $parameters);
+        return array_map(static function(string $name) use ($prefixes) {
+            $prefix = '';
+            if (isset($prefixes[$name])) {
+                $prefix = $prefixes[$name];
+            }
+            return $prefix . ':' . $name;
+        }, $parameters);
     }
 
     public function retrieveAll(AggregateRootId $id): Generator
     {
         $builder = $this->createQueryBuilder();
-        $builder->where(sprintf('%s = :aggregate_root_id', $this->tableSchema->aggregateRootIdColumn()));
-        $builder->setParameter('aggregate_root_id', $this->aggregateRootIdEncoder->encodeId($id));
+        $builder->where(sprintf('%s = _binary :aggregate_root_id', $this->tableSchema->aggregateRootIdColumn()));
+        $builder->setParameter('aggregate_root_id', $this->aggregateRootIdEncoder->encodeId($id), ParameterType::BINARY);
 
         try {
-            return $this->yieldMessagesFromPayloads($builder->executeQuery()->iterateColumn());
+            return $this->yieldMessagesFromPayloads($builder->execute()->iterateColumn());
         } catch (Throwable $exception) {
             throw UnableToRetrieveMessages::dueTo('', $exception);
         }
@@ -134,13 +149,13 @@ class DoctrineMessageRepository implements MessageRepository
     public function retrieveAllAfterVersion(AggregateRootId $id, int $aggregateRootVersion): Generator
     {
         $builder = $this->createQueryBuilder();
-        $builder->where(sprintf('%s = :aggregate_root_id', $this->tableSchema->aggregateRootIdColumn()));
+        $builder->where(sprintf('%s = _binary :aggregate_root_id', $this->tableSchema->aggregateRootIdColumn()));
         $builder->andWhere(sprintf('%s > :version', $this->tableSchema->versionColumn()));
         $builder->setParameter('aggregate_root_id', $this->aggregateRootIdEncoder->encodeId($id));
         $builder->setParameter('version', $aggregateRootVersion);
 
         try {
-            return $this->yieldMessagesFromPayloads($builder->executeQuery()->iterateColumn());
+            return $this->yieldMessagesFromPayloads($builder->execute()->iterateColumn());
         } catch (Throwable $exception) {
             throw UnableToRetrieveMessages::dueTo('', $exception);
         }
@@ -188,7 +203,7 @@ class DoctrineMessageRepository implements MessageRepository
         $builder->setParameter('id', $cursor->offset());
 
         try {
-            foreach ($builder->executeQuery()->iterateAssociative() as $row) {
+            foreach ($builder->execute()->iterateAssociative() as $row) {
                 $offset = $row[$incrementalIdColumn];
                 yield $this->serializer->unserializePayload(json_decode($row['payload'], true));
             }
