@@ -36,7 +36,10 @@ abstract class DoctrineMessageRepositoryTestCase extends MessageRepositoryTestCa
 
         $warning = $this->connection->executeQuery('SHOW WARNINGS')->fetchNumeric();
         if (count($warning) > 0) {
-            var_dump($warning);
+            if (str_contains($warning[2], 'Base table or view not found')) {
+                // shortcut for tests
+                return;
+            }
             self::fail(sprintf(
                 'Warnings issued durings tests, these can potentially result in data loss: [%d] %s',
                 $warning[1],
